@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>排课系统</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">排课系统</div>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="overview">上传数据</button><span class="tab-arrow">→</span>
+      <button class="tab" data-tab="block">不排课</button><span class="tab-arrow">→</span>
+      <button class="tab" data-tab="fixed">固定课</button><span class="tab-arrow">→</span>
+      <button class="tab" data-tab="subject">课程约束</button><span class="tab-arrow">→</span>
+      <button class="tab" data-tab="teacher">教师不排课</button><span class="tab-arrow">→</span>
+      <button class="tab" data-tab="rules">其它规则</button><span class="tab-arrow">→</span>
+      <button class="tab" data-tab="result">排课与导出</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="overview" class="panel active">
+      <div class="panel-head">
+        <h2>上传基本数据</h2>
+        <span id="dataStatus" class="muted">正在读取...</span>
+      </div>
+      <div class="actions data-tools">
+        <button id="downloadTemplate" class="btn">下载模板</button>
+        <input type="file" id="dataUpload" accept=".xlsx">
+        <button id="resetData" class="btn ghost">使用默认数据演示</button>
+      </div>
+      <div id="dataSourceInfo" class="muted"></div>
+      <div id="summaryCards" class="card-grid"></div>
+      <div id="dataWarnings" class="warning-box"></div>
+      <div class="section-title">作息时间</div>
+      <div class="table-scroll">
+        <table class="schedule-grid compact" id="scheduleTable"></table>
+      </div>
+    </section>
+
+    <section id="block" class="panel">
+      <div class="panel-head">
+        <h2>设置班级没有课的时间段</h2>
+        <div class="actions">
+          <select id="blockClassSelect"></select>
+          <label class="check-label"><input type="checkbox" id="blockApplyGrade"> 应用到同年级</label>
+          <label class="check-label"><input type="checkbox" id="blockApplyAll"> 应用到全部班级</label>
+          <button id="clearBlockClass" class="btn ghost">清空本班</button>
+          <button id="clearAllBlock" class="btn danger-ghost">清空全部</button>
+        </div>
+      </div>
+      <div id="blockCount" class="muted"></div>
+      <div class="table-scroll" id="blockGrid"></div>
+    </section>
+
+    <section id="fixed" class="panel">
+      <div class="panel-head">
+        <h2>设置固定课（如班会课，早晚自习等）</h2>
+        <div class="actions">
+          <select id="fixedClassSelect"></select>
+          <button id="clearFixedClass" class="btn ghost">清空本班</button>
+          <button id="clearAllFixed" class="btn danger-ghost">清空全部</button>
+        </div>
+      </div>
+      <div id="fixedCount" class="muted"></div>
+      <div class="table-scroll" id="fixedGrid"></div>
+    </section>
+
+    <section id="subject" class="panel">
+      <div class="panel-head">
+        <h2>设置某些课不出现的时段（如体育课，美术课）</h2>
+        <div class="actions">
+          <select id="subjectSelect"></select>
+          <button id="subjectClearSelected" class="btn">清除该科目约束</button>
+          <button id="subjectClearEvery" class="btn danger-ghost">清除全部约束</button>
+        </div>
+      </div>
+      <div id="subjectCount" class="muted"></div>
+      <div class="table-scroll" id="subjectGrid"></div>
+    </section>
+
+    <section id="teacher" class="panel">
+      <div class="panel-head">
+        <h2>设置某些教师在某些时段不排课</h2>
+        <div class="actions">
+          <select id="teacherSelect"></select>
+          <button id="teacherClearSelected" class="btn">清除该教师不排课</button>
+          <button id="teacherClearEvery" class="btn danger-ghost">清除全部教师</button>
+        </div>
+      </div>
+      <div id="teacherSelectedCount" class="muted"></div>
+      <div class="table-scroll" id="teacherGrid"></div>
+    </section>
+
+    <section id="rules" class="panel">
+      <div class="panel-head">
+        <h2>其它排课规则</h2>
+        <button id="saveRules" class="btn">保存规则</button>
+      </div>
+      <div class="rules-grid">
+        <label>
+          <span>同科同天最多（含固定课）</span>
+          <input type="number" id="dailyMaxInput" min="1" max="12">
+        </label>
+        <label>
+          <span>同科连堂最多（不含固定课）</span>
+          <input type="number" id="consecutiveMaxInput" min="1" max="12">
+        </label>
+      </div>
+      <div class="section-title">优先连堂课程</div>
+      <div class="actions preferred-actions">
+        <label>优先连堂节数 <input type="number" id="preferredConsecutiveInput" min="1" max="12"></label>
+        <button id="applyPreferredConsecutive" class="btn">应用到选中课程</button>
+      </div>
+      <div id="preferredSubjectList" class="subject-check-list"></div>
+      <div id="ruleStatus" class="muted"></div>
+    </section>
+
+    <section id="result" class="panel">
+      <div class="panel-head">
+        <h2>排课与导出</h2>
+        <div class="actions">
+          <label>班级表头 <input id="classTitleInput" placeholder="课程表"></label>
+          <label>教师表头 <input id="teacherTitleInput" placeholder="课程表"></label>
+          <button id="solveButton" class="btn primary">开始自动排课</button>
+          <button id="exportButton" class="btn" disabled>导出 Excel</button>
+          <button id="resetResultButton" class="btn ghost" disabled>清空本次排课</button>
+        </div>
+      </div>
+      <div id="solveStatus" class="status-line"></div>
+      <div id="solveErrors" class="error-box"></div>
+      <div class="result-tabs" id="resultTabs">
+        <button class="result-tab active" data-view="class">班级课表</button>
+        <button class="result-tab" data-view="teacher">教师课表</button>
+        <button class="result-tab" data-view="report">校验报告</button>
+      </div>
+      <div id="resultView" class="result-view">
+        <div id="view-class">
+          <div class="toolbar">
+            <select id="resultClassSelect"></select>
+          </div>
+          <div class="table-scroll" id="resultClassGrid"></div>
+        </div>
+        <div id="view-teacher" class="hidden">
+          <div class="toolbar">
+            <select id="resultTeacherSelect"></select>
+          </div>
+          <div class="table-scroll" id="resultTeacherGrid"></div>
+        </div>
+        <div id="view-report" class="hidden">
+          <div id="resultReport"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="blockWarnModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-head">
+        <h3>不排课数量提示</h3>
+      </div>
+      <div id="blockWarnText"></div>
+      <div class="modal-actions">
+        <button id="blockWarnContinue" class="btn primary">继续设置</button>
+        <button id="blockWarnSkip" class="btn ghost">暂时跳过</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <div id="fixedModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-head">
+        <h3 id="fixedModalTitle"></h3>
+        <button id="fixedModalClose" class="btn ghost">关闭</button>
+      </div>
+      <div id="fixedModalList"></div>
+      <div class="modal-actions">
+        <button id="fixedModalClear" class="btn danger-ghost">清除当前格</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
