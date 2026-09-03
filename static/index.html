@@ -38,6 +38,7 @@
       <div class="table-scroll">
         <table class="schedule-grid compact" id="scheduleTable"></table>
       </div>
+      <div id="usage-overview" class="usage"></div>
     </section>
 
     <section id="block" class="panel">
@@ -53,6 +54,7 @@
       </div>
       <div id="blockCount" class="muted"></div>
       <div class="table-scroll" id="blockGrid"></div>
+      <div id="usage-block" class="usage"></div>
     </section>
 
     <section id="fixed" class="panel">
@@ -66,6 +68,7 @@
       </div>
       <div id="fixedCount" class="muted"></div>
       <div class="table-scroll" id="fixedGrid"></div>
+      <div id="usage-fixed" class="usage"></div>
     </section>
 
     <section id="subject" class="panel">
@@ -79,6 +82,7 @@
       </div>
       <div id="subjectCount" class="muted"></div>
       <div class="table-scroll" id="subjectGrid"></div>
+      <div id="usage-subject" class="usage"></div>
     </section>
 
     <section id="teacher" class="panel">
@@ -92,6 +96,7 @@
       </div>
       <div id="teacherSelectedCount" class="muted"></div>
       <div class="table-scroll" id="teacherGrid"></div>
+      <div id="usage-teacher" class="usage"></div>
     </section>
 
     <section id="rules" class="panel">
@@ -116,6 +121,7 @@
       </div>
       <div id="preferredSubjectList" class="subject-check-list"></div>
       <div id="ruleStatus" class="muted"></div>
+      <div id="usage-rules" class="usage"></div>
     </section>
 
     <section id="result" class="panel">
@@ -153,6 +159,7 @@
           <div id="resultReport"></div>
         </div>
       </div>
+      <div id="usage-result" class="usage"></div>
     </section>
   </main>
 
@@ -170,6 +177,20 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
+
+  <div id="dragConfirmModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-head">
+        <h3>拖动调整确认</h3>
+        <button id="dragConfirmCancel" class="btn ghost">取消</button>
+      </div>
+      <div id="dragConfirmText"></div>
+      <div class="modal-actions">
+        <button id="dragConfirmYes" class="btn primary">确认调整</button>
+        <button id="dragConfirmNo" class="btn ghost">取消</button>
+      </div>
+    </div>
+  </div>
 
   <div id="fixedModal" class="modal hidden">
     <div class="modal-content">

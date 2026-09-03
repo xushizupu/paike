@@ -14,6 +14,7 @@ let dragSource = null;
 let saveTimer = null;
 let pendingTab = null;
 let solveVariant = 0;
+let pendingDrag = null;
 
 const esc = (value) =>
   String(value ?? "").replace(/[&<>"']/g, (ch) => {
@@ -122,7 +123,21 @@ async function init() {
   renderTeacherGrid();
   renderRules();
   renderTitleInputs();
+  try {
+    const usagePayload = await apiGet("/api/usage");
+    renderUsage(usagePayload.usage || {});
+  } catch (error) {
+    console.error(error);
+  }
   attachEvents();
+}
+
+function renderUsage(usage) {
+  for (const [tab, lines] of Object.entries(usage)) {
+    const container = $(`usage-${tab}`);
+    if (!container) continue;
+    container.innerHTML = (lines || []).map((line) => `<div>${esc(line)}</div>`).join("");
+  }
 }
 
 function populateClassSelect(id, onChange) {
@@ -450,7 +465,11 @@ function renderResult() {
   renderResultClassGrid();
   renderTeacherResultGrid();
   renderReport();
-  $("solveStatus").textContent = `排课完成：${RESULT.status || "FEASIBLE"}`;
+  if (RESULT.status === "OPTIMAL") {
+    $("solveStatus").textContent = "排课完成：OPTIMAL，已证明最优，可在班级课表中拖动调课。";
+  } else {
+    $("solveStatus").textContent = "排课完成：FEASIBLE，可行方案（未证明最优），可在班级课表中拖动调课。";
+  }
 }
 
 function renderResultClassGrid() {
@@ -540,13 +559,14 @@ function renderReport() {
   $("resultReport").innerHTML = reportLines + issueLines;
 }
 
-function validateResultLocal() {
+function validateResultLocal(schedule) {
+  const result = schedule || (RESULT ? RESULT.schedule : {});
   const issues = [];
   const counts = {};
   for (const cls of DATA.classes) {
     counts[cls] = {};
     DATA.subjects.forEach((subject) => (counts[cls][subject] = 0));
-    const cells = RESULT.schedule[cls] || {};
+    const cells = result[cls] || {};
     for (const [key, cell] of Object.entries(cells)) {
       const subject = cell.subject;
       counts[cls][subject] = (counts[cls][subject] || 0) + 1;
@@ -573,7 +593,7 @@ function validateResultLocal() {
 
   const occupied = {};
   for (const cls of DATA.classes) {
-    for (const [key, cell] of Object.entries(RESULT.schedule[cls] || {})) {
+    for (const [key, cell] of Object.entries(result[cls] || {})) {
       if (!cell.teacher) continue;
       const id = `${cell.teacher}|${key}`;
       if (occupied[id]) {
@@ -591,7 +611,7 @@ function validateResultLocal() {
       for (const subject of DATA.subjects) {
         let dayCount = 0;
         for (let period = 0; period < DATA.nSlots; period++) {
-          const cell = RESULT.schedule[cls][slotKey(day, period)];
+          const cell = result[cls][slotKey(day, period)];
           if (cell && cell.subject === subject) dayCount += 1;
         }
         if (dayCount > dailyMax) {
@@ -600,8 +620,8 @@ function validateResultLocal() {
       }
       let run = 1;
       for (let period = 1; period < DATA.nSlots; period++) {
-        const previous = RESULT.schedule[cls][slotKey(day, period - 1)];
-        const current = RESULT.schedule[cls][slotKey(day, period)];
+        const previous = result[cls][slotKey(day, period - 1)];
+        const current = result[cls][slotKey(day, period)];
         if (current && previous && current.subject === previous.subject) {
           run += 1;
           if (run > consecutiveMax) {
@@ -627,6 +647,13 @@ function toggleBlock(cls, key) {
     if (SETTINGS.fixed[cls]) delete SETTINGS.fixed[cls][key];
     if (SETTINGS.manual[cls]) delete SETTINGS.manual[cls][key];
   }
+}
+
+function copyBlockPattern(source, targets) {
+  const pattern = [...(SETTINGS.classBlocked[source] || [])];
+  targets.forEach((cls) => {
+    SETTINGS.classBlocked[cls] = [...pattern];
+  });
 }
 
 function toggleFixed(cls, key, subject) {
@@ -680,7 +707,13 @@ async function runSolve() {
     solveVariant += 1;
     const payload = await apiPost("/api/solve", { settings: SETTINGS, variant: solveVariant });
     if (!payload.ok) {
-      $("solveStatus").textContent = "排课失败";
+      if (payload.errorKind === "timeout") {
+        $("solveStatus").textContent = "排课超时：未在 60 秒内找到方案，请稍后重试。";
+      } else if (payload.errorKind === "infeasible") {
+        $("solveStatus").textContent = "排课失败：当前约束下没有可行课表。";
+      } else {
+        $("solveStatus").textContent = "排课失败：请先检查设置。";
+      }
       showErrors(payload.errors || payload.report || []);
       return;
     }
@@ -748,34 +781,88 @@ async function exportWorkbook() {
       : "导出成功";
 }
 
+function moveOnSchedule(schedule, cls, sourceKey, targetKey) {
+  const sourceCell = schedule[cls][sourceKey];
+  const targetCell = schedule[cls][targetKey];
+  if (!sourceCell || sourceCell.source === "fixed") return false;
+  if (targetCell && targetCell.source === "fixed") return false;
+  const newSource = targetCell ? { ...targetCell, source: "manual" } : null;
+  const newTarget = { ...sourceCell, source: "manual" };
+  if (newSource) schedule[cls][sourceKey] = newSource;
+  else delete schedule[cls][sourceKey];
+  schedule[cls][targetKey] = newTarget;
+  return true;
+}
+
+function isHardIssue(text) {
+  return (
+    /同时出现/.test(text) ||
+    /标为不排课，但仍有课程/.test(text) ||
+    /与任课表不一致/.test(text) ||
+    /实际 .* 节，应排/.test(text) ||
+    /与锁定课程.*不一致/.test(text)
+  );
+}
+
+function classifyDragIssues(issues) {
+  const hard = [];
+  const soft = [];
+  issues.forEach((issue) => {
+    if (isHardIssue(issue)) hard.push(issue);
+    else soft.push(issue);
+  });
+  return { hard, soft };
+}
+
 function applyDragMove(sourceTd, targetTd) {
   const cls = currentResultClass;
   const sourceKey = sourceTd.dataset.key;
   const targetKey = targetTd.dataset.key;
   if (!sourceKey || !targetKey || sourceKey === targetKey) return;
-  if (targetTd.dataset.blocked === "1") return;
-  const sourceCell = RESULT.schedule[cls][sourceKey];
-  const targetCell = RESULT.schedule[cls][targetKey];
-  if (!sourceCell || sourceCell.source === "fixed") return;
-  if (targetCell && targetCell.source === "fixed") return;
-  if ((SETTINGS.subjectConstraints[sourceCell.subject] || []).includes(targetKey)) return;
-  if (targetCell && (SETTINGS.subjectConstraints[targetCell.subject] || []).includes(sourceKey)) return;
-
   deleteManual(cls, sourceKey);
   deleteManual(cls, targetKey);
-
-  const newSource = targetCell ? { ...targetCell, source: "manual" } : null;
-  const newTarget = { ...sourceCell, source: "manual" };
-  if (newSource) {
-    RESULT.schedule[cls][sourceKey] = newSource;
-    SETTINGS.manual[cls] = SETTINGS.manual[cls] || {};
-    SETTINGS.manual[cls][sourceKey] = newSource.subject;
-  } else {
-    delete RESULT.schedule[cls][sourceKey];
-  }
-  RESULT.schedule[cls][targetKey] = newTarget;
+  const moved = moveOnSchedule(RESULT.schedule, cls, sourceKey, targetKey);
+  if (!moved) return;
+  const sourceSubject = RESULT.schedule[cls][targetKey].subject;
   SETTINGS.manual[cls] = SETTINGS.manual[cls] || {};
-  SETTINGS.manual[cls][targetKey] = newTarget.subject;
+  SETTINGS.manual[cls][targetKey] = sourceSubject;
+  if (RESULT.schedule[cls][sourceKey]) {
+    SETTINGS.manual[cls][sourceKey] = RESULT.schedule[cls][sourceKey].subject;
+  }
+}
+
+function startDragMove(sourceTd, targetTd) {
+  const cls = currentResultClass;
+  const sourceKey = sourceTd.dataset.key;
+  const targetKey = targetTd.dataset.key;
+  if (!sourceKey || !targetKey || sourceKey === targetKey) return;
+  if (targetTd.dataset.blocked === "1") {
+    showToast("不能放入不排课时间格");
+    return;
+  }
+  const trial = JSON.parse(JSON.stringify(RESULT.schedule));
+  if (!moveOnSchedule(trial, cls, sourceKey, targetKey)) {
+    showToast("不能移动固定课，也不能覆盖固定课");
+    return;
+  }
+  const issues = validateResultLocal(trial);
+  const { hard, soft } = classifyDragIssues(issues);
+  if (hard.length) {
+    showToast(`调整被禁止：${hard[0]}`);
+    return;
+  }
+  if (soft.length) {
+    pendingDrag = { sourceTd, targetTd };
+    $("dragConfirmText").innerHTML =
+      `<div>本次调整会触发以下提示，确认执行吗？</div>` +
+      soft.map((issue) => `<div class="issue">${esc(issue)}</div>`).join("");
+    $("dragConfirmModal").classList.add("show");
+    return;
+  }
+  applyDragMove(sourceTd, targetTd);
+  renderResultClassGrid();
+  renderReport();
+  saveSettings();
 }
 
 function attachEvents() {
@@ -790,29 +877,22 @@ function attachEvents() {
     const td = event.target.closest("td[data-key]");
     if (!td || !currentBlockClass) return;
     const key = td.dataset.key;
-    const targets = $("blockApplyAll").checked
-      ? DATA.classes
-      : $("blockApplyGrade").checked
-      ? sameGradeClasses(currentBlockClass)
-      : [currentBlockClass];
-    let blockedAttempt = false;
-    let applied = 0;
-    targets.forEach((cls) => {
-      const adding = !isBlocked(cls, key);
-      if (adding && blockCountFor(cls) >= blockTargetFor(cls)) {
-        blockedAttempt = true;
-        return;
-      }
-      toggleBlock(cls, key);
-      applied += 1;
-    });
-    if (blockedAttempt) {
+    const adding = !isBlocked(currentBlockClass, key);
+    if (adding && blockCountFor(currentBlockClass) >= blockTargetFor(currentBlockClass)) {
       showToast(`该班不排课量应为${blockTargetFor(currentBlockClass)}`);
+      return;
     }
-    if (applied > 0) {
-      renderBlockGrid();
-      saveSettings();
+    toggleBlock(currentBlockClass, key);
+    if ($("blockApplyAll").checked) {
+      copyBlockPattern(currentBlockClass, DATA.classes);
+      showToast(`已同步到全部 ${DATA.classes.length} 个班`);
+    } else if ($("blockApplyGrade").checked) {
+      const targets = sameGradeClasses(currentBlockClass);
+      copyBlockPattern(currentBlockClass, targets);
+      showToast(`已同步到同年级 ${targets.length} 个班`);
     }
+    renderBlockGrid();
+    saveSettings();
   });
 
   $("fixedGrid").addEventListener("click", (event) => {
@@ -910,6 +990,25 @@ function attachEvents() {
     pendingTab = null;
   });
 
+  const closeDragConfirm = () => {
+    $("dragConfirmModal").classList.remove("show");
+    pendingDrag = null;
+  };
+  $("dragConfirmYes").addEventListener("click", () => {
+    if (pendingDrag) {
+      applyDragMove(pendingDrag.sourceTd, pendingDrag.targetTd);
+      renderResultClassGrid();
+      renderReport();
+      saveSettings();
+    }
+    closeDragConfirm();
+  });
+  $("dragConfirmNo").addEventListener("click", closeDragConfirm);
+  $("dragConfirmCancel").addEventListener("click", closeDragConfirm);
+  $("dragConfirmModal").addEventListener("click", (event) => {
+    if (event.target === $("dragConfirmModal")) closeDragConfirm();
+  });
+
   $("fixedModalClose").addEventListener("click", closeFixedModal);
   $("fixedModal").addEventListener("click", (event) => {
     if (event.target === $("fixedModal")) closeFixedModal();
@@ -940,6 +1039,16 @@ function attachEvents() {
   $("dataUpload").addEventListener("change", async (event) => {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".xlsx")) {
+      showToast("请上传 .xlsx 格式的模板文件");
+      event.target.value = "";
+      return;
+    }
+    if (file.size > 1024 * 1024) {
+      showToast("文件大小不能超过 1MB");
+      event.target.value = "";
+      return;
+    }
     const buffer = await file.arrayBuffer();
     const binary = new Uint8Array(buffer).reduce((acc, byte) => acc + String.fromCharCode(byte), "");
     const contentBase64 = btoa(binary);
@@ -1014,11 +1123,8 @@ function attachEvents() {
     const td = event.target.closest("td[data-key]");
     if (td) td.classList.remove("drag-over");
     if (!dragSource) return;
-    applyDragMove(dragSource, td);
+    startDragMove(dragSource, td);
     dragSource = null;
-    renderResultClassGrid();
-    renderReport();
-    saveSettings();
   });
   classGrid.addEventListener("dragend", () => {
     classGrid.querySelectorAll(".dragging, .drag-over").forEach((cell) => cell.classList.remove("dragging", "drag-over"));
