@@ -1,12 +1,15 @@
-"""本地排课 Web 应用。"""
+"""排课 Web 应用：基于会话隔离的多用户版本。"""
 
 from __future__ import annotations
 
-import json
 import base64
+import json
 import mimetypes
 import os
-import socketserver
+import re
+import shutil
+import threading
+import time
 import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,36 +22,41 @@ import scheduler
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "基本数据.xlsx"
-CONFIG_FILE = BASE_DIR / "排课设置.json"
-OUTPUT_DIR = BASE_DIR / "output"
 STATIC_DIR = BASE_DIR / "static"
-UPLOAD_DIR = BASE_DIR / "uploads"
-DATA_SOURCE_FILE = BASE_DIR / "data_source.json"
+SESSION_ROOT = BASE_DIR / "sessions"
+USAGE_FILE = BASE_DIR / "页面使用说明.json"
+
+SESSION_TTL_SECONDS = 3600
+MAX_SESSIONS = 200
+MAX_UPLOAD_BYTES = 1 * 1024 * 1024
+SOLVE_LOCK = threading.Lock()
 
 
-def get_data_file():
-    if DATA_SOURCE_FILE.exists():
+def _cleanup_sessions():
+    """删除空闲超过1小时的会话，并在会话过多时清理最旧的。"""
+    SESSION_ROOT.mkdir(exist_ok=True)
+    now = time.time()
+    entries = []
+    for child in SESSION_ROOT.iterdir():
+        if not child.is_dir():
+            continue
         try:
-            info = json.loads(DATA_SOURCE_FILE.read_text(encoding="utf-8"))
-            candidate = BASE_DIR / info["path"]
-            if candidate.exists():
-                return candidate
-        except (ValueError, KeyError, TypeError):
-            pass
-    return DATA_FILE
-
-
-def get_data_info():
-    path = get_data_file()
-    return {
-        "path": str(path),
-        "name": path.name,
-        "isDemo": path.resolve() == DATA_FILE.resolve(),
-    }
+            mtime = child.stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime > SESSION_TTL_SECONDS:
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            entries.append((mtime, child))
+    entries.sort()
+    while len(entries) > MAX_SESSIONS:
+        _, old = entries.pop(0)
+        shutil.rmtree(old, ignore_errors=True)
 
 
 class ScheduleHandler(BaseHTTPRequestHandler):
     server_version = "PaikeLocal/1.0"
+    _cleanup_counter = 0
 
     def _send_json(self, payload, status=200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -56,6 +64,7 @@ class ScheduleHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._send_session_cookie()
         self.end_headers()
         self.wfile.write(body)
 
@@ -73,12 +82,59 @@ class ScheduleHandler(BaseHTTPRequestHandler):
         if cache_control:
             self.send_header("Cache-Control", cache_control)
         self.send_header("Content-Length", str(len(data)))
+        self._send_session_cookie()
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_session_cookie(self):
+        if getattr(self, "session_id", None):
+            self.send_header("Set-Cookie", f"session_id={self.session_id}; Path=/; HttpOnly; SameSite=Lax")
+
+    def _cookie_value(self, name):
+        cookie = self.headers.get("Cookie") or ""
+        for part in cookie.split(";"):
+            part = part.strip()
+            if part.startswith(name + "="):
+                return part[len(name) + 1:]
+        return None
+
+    def _ensure_session(self):
+        sid = self._cookie_value("session_id")
+        valid_sid = bool(sid) and bool(re.fullmatch(r"[0-9a-f]{32}", sid))
+        session_dir = SESSION_ROOT / sid if valid_sid else None
+        if session_dir is None or not session_dir.is_dir():
+            sid = uuid.uuid4().hex
+            session_dir = SESSION_ROOT / sid
+            session_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            try:
+                os.utime(session_dir, None)
+            except OSError:
+                pass
+        self.session_id = sid
+        ScheduleHandler._cleanup_counter += 1
+        if ScheduleHandler._cleanup_counter % 20 == 0:
+            _cleanup_sessions()
+        return session_dir
+
+    def _session_dir(self):
+        return SESSION_ROOT / self.session_id
+
+    def _data_file(self):
+        session_data = self._session_dir() / "data.xlsx"
+        return session_data if session_data.exists() else DATA_FILE
+
+    def _settings_file(self):
+        return self._session_dir() / "settings.json"
+
+    def _output_dir(self):
+        return self._session_dir() / "output"
 
     def _read_body(self):
         length = int(self.headers.get("Content-Length", "0") or "0")
         if length <= 0:
+            return {}
+        if length > 8 * 1024 * 1024:
             return {}
         try:
             return json.loads(self.rfile.read(length).decode("utf-8"))
@@ -89,6 +145,7 @@ class ScheduleHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path in ("/", "/index.html"):
+            self._ensure_session()
             self._serve_file(STATIC_DIR / "index.html")
             return
         if path.startswith("/static/"):
@@ -99,11 +156,25 @@ class ScheduleHandler(BaseHTTPRequestHandler):
                 return
             self._serve_file(target)
             return
+        if path == "/api/ping":
+            self._send_json({"ok": True, "pong": True})
+            return
         if path == "/api/data":
+            self._ensure_session()
             self._send_json(self._data_payload())
             return
         if path == "/api/settings":
+            self._ensure_session()
             self._send_json(self._data_payload())
+            return
+        if path == "/api/usage":
+            usage = {}
+            if USAGE_FILE.exists():
+                try:
+                    usage = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
+                except (ValueError, json.JSONDecodeError):
+                    usage = {}
+            self._send_json({"ok": True, "usage": usage})
             return
         if path == "/api/template":
             content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -115,73 +186,73 @@ class ScheduleHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         body = self._read_body()
+        session_dir = self._ensure_session()
         if path == "/api/upload":
             filename = str(body.get("filename") or "upload.xlsx")
             content_b64 = body.get("contentBase64") or ""
+            if not filename.lower().endswith(".xlsx"):
+                self._send_json({"error": "请上传 .xlsx 格式的模板文件"}, 400)
+                return
             try:
                 content = base64.b64decode(content_b64)
             except (ValueError, TypeError):
                 self._send_json({"error": "文件内容无法解析"}, 400)
                 return
-            UPLOAD_DIR.mkdir(exist_ok=True)
-            safe_name = Path(filename).name
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            target = UPLOAD_DIR / f"{timestamp}_{safe_name}"
-            target.write_bytes(content)
+            if not content or len(content) > MAX_UPLOAD_BYTES:
+                self._send_json({"error": "文件大小不能超过 1MB"}, 400)
+                return
+            tmp_target = session_dir / "data_upload_tmp.xlsx"
+            tmp_target.write_bytes(content)
             try:
-                data = scheduler.load_schedule_data(target)
+                data = scheduler.load_schedule_data(tmp_target)
             except Exception as exc:  # noqa: BLE001
-                target.unlink(missing_ok=True)
+                tmp_target.unlink(missing_ok=True)
                 self._send_json({"error": f"模板格式不正确：{exc}"}, 400)
                 return
-            DATA_SOURCE_FILE.write_text(
-                json.dumps({"path": str(target.relative_to(BASE_DIR))}, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            target = session_dir / "data.xlsx"
+            target.unlink(missing_ok=True)
+            os.replace(tmp_target, target)
             settings = scheduler.normalize_settings({}, data)
-            scheduler.save_settings(CONFIG_FILE, settings)
+            scheduler.save_settings(self._settings_file(), settings)
             self._send_json(self._data_payload())
             return
         if path == "/api/reset-data":
-            if DATA_SOURCE_FILE.exists():
-                try:
-                    info = json.loads(DATA_SOURCE_FILE.read_text(encoding="utf-8"))
-                    uploaded = BASE_DIR / info["path"]
-                    if UPLOAD_DIR.resolve() in uploaded.resolve().parents:
-                        uploaded.unlink(missing_ok=True)
-                except (ValueError, KeyError, TypeError):
-                    pass
-                DATA_SOURCE_FILE.unlink(missing_ok=True)
+            data_file = session_dir / "data.xlsx"
+            data_file.unlink(missing_ok=True)
+            output_dir = session_dir / "output"
+            if output_dir.exists():
+                shutil.rmtree(output_dir, ignore_errors=True)
             data = scheduler.load_schedule_data(DATA_FILE)
             settings = scheduler.normalize_settings({}, data)
-            scheduler.save_settings(CONFIG_FILE, settings)
+            scheduler.save_settings(self._settings_file(), settings)
             self._send_json(self._data_payload())
             return
         if path == "/api/solve":
-            data = scheduler.load_schedule_data(get_data_file())
+            data = scheduler.load_schedule_data(self._data_file())
             settings = scheduler.normalize_settings(body.get("settings"), data)
             variant = body.get("variant")
             try:
                 variant = int(variant)
             except (TypeError, ValueError):
                 variant = None
-            result = scheduler.solve_schedule(data, settings, variant=variant)
+            with SOLVE_LOCK:
+                result = scheduler.solve_schedule(data, settings, variant=variant)
             self._send_json(result)
             return
         if path == "/api/save":
-            data = scheduler.load_schedule_data(get_data_file())
+            data = scheduler.load_schedule_data(self._data_file())
             settings = scheduler.normalize_settings(body.get("settings"), data)
-            scheduler.save_settings(CONFIG_FILE, settings)
+            scheduler.save_settings(self._settings_file(), settings)
             self._send_json({"ok": True})
             return
         if path == "/api/export":
-            data = scheduler.load_schedule_data(get_data_file())
+            data = scheduler.load_schedule_data(self._data_file())
             settings = scheduler.normalize_settings(body.get("settings"), data)
             result = body.get("result") or {}
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             suffix = uuid.uuid4().hex[:6]
             issues, files = excel_io.write_result_files(
-                data, settings, result, OUTPUT_DIR, timestamp, suffix
+                data, settings, result, self._output_dir(), timestamp, suffix
             )
             payload = {"ok": True, "files": files, "issues": issues}
             self._send_json(payload)
@@ -191,8 +262,9 @@ class ScheduleHandler(BaseHTTPRequestHandler):
             if not filename or ".." in filename:
                 self._send_json({"error": "bad filename"}, 400)
                 return
-            target = (OUTPUT_DIR / filename).resolve()
-            if OUTPUT_DIR.resolve() not in target.parents:
+            target = (self._output_dir() / filename).resolve()
+            output_dir = self._output_dir().resolve()
+            if output_dir not in target.parents:
                 self._send_json({"error": "forbidden"}, 403)
                 return
             if not target.exists():
@@ -205,15 +277,20 @@ class ScheduleHandler(BaseHTTPRequestHandler):
 
     def _data_payload(self):
         try:
-            data = scheduler.load_schedule_data(get_data_file())
+            data = scheduler.load_schedule_data(self._data_file())
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
-        settings = scheduler.load_settings(CONFIG_FILE, data)
+        settings = scheduler.load_settings(self._settings_file(), data)
+        path = self._data_file()
         return {
             "ok": True,
             "data": data.to_dict(),
             "settings": scheduler.settings_to_json(settings),
-            "dataSource": get_data_info(),
+            "dataSource": {
+                "path": str(path),
+                "name": path.name,
+                "isDemo": path.resolve() == DATA_FILE.resolve(),
+            },
         }
 
     def _serve_file(self, target):
@@ -228,6 +305,7 @@ class ScheduleHandler(BaseHTTPRequestHandler):
 
 
 def main():
+    SESSION_ROOT.mkdir(exist_ok=True)
     requested_port = int(os.environ.get("PORT", "8000"))
     host = os.environ.get("HOST", "0.0.0.0")
     port = requested_port

@@ -400,12 +400,40 @@ def validate_settings(data, settings):
     return sorted(set(errors))
 
 
+def _infeasible_suggestions(data, settings):
+    """根据设置生成无解时的关键建议。"""
+    suggestions = []
+    daily_max = settings["rules"]["dailyMax"]
+    consecutive_max = settings["rules"]["consecutiveMax"]
+    if daily_max <= 2:
+        suggestions.append("同科同天最多限制较严，可尝试提高到 3-5 节。")
+    if consecutive_max <= 1:
+        suggestions.append("连堂上限为 1，可尝试提高到 2 节，通常更容易排通。")
+    if any(settings["teacherUnavailable"].values()):
+        total_off = sum(len(v) for v in settings["teacherUnavailable"].values())
+        suggestions.append(f"教师不排课时段共 {total_off} 个，可尝试减少一些不排课时段。")
+    if any(settings["subjectConstraints"].values()):
+        suggestions.append("科目时段约束较多，可尝试减少某些科目不出现的时段。")
+    if settings["preferredConsecutive"]:
+        suggestions.append("优先连堂会增加求解难度，可暂时取消优先连堂后再排一次。")
+    if any(settings["classBlocked"].values()):
+        blocked_total = sum(len(v) for v in settings["classBlocked"].values())
+        suggestions.append(f"当前共设置 {blocked_total} 个班级不排课时间格，可尝试减少。")
+    suggestions.append("也可以点击“清空本次排课”后用新的随机方案重试。")
+    return suggestions
+
+
 def solve_schedule(data, settings, variant=None):
     """用 CP-SAT 求解课表。"""
     settings = normalize_settings(settings, data)
     errors = validate_settings(data, settings)
     if errors:
-        return {"ok": False, "errors": errors, "report": errors}
+        return {
+            "ok": False,
+            "errorKind": "validation",
+            "errors": errors,
+            "report": errors,
+        }
 
     locked = merge_locked(settings)
     remaining = {}
@@ -536,17 +564,26 @@ def solve_schedule(data, settings, variant=None):
         model.Maximize(sum(pair_vars))
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 10.0
+    solver.parameters.max_time_in_seconds = 60.0
     solver.parameters.num_search_workers = 8
     seed = variant if variant is not None else int(time.time_ns() % (2**31))
     solver.parameters.random_seed = seed
     status = solver.Solve(model)
 
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+    if status == cp_model.INFEASIBLE:
+        suggestions = _infeasible_suggestions(data, settings)
         return {
             "ok": False,
-            "errors": ["自动排课失败：约束过紧，请检查不排课、固定课和教师不排课设置。"],
-            "report": errors or ["自动排课失败：约束过紧，请检查不排课、固定课和教师不排课设置。"],
+            "errorKind": "infeasible",
+            "errors": ["当前约束下没有可行课表。"] + suggestions,
+            "report": ["当前约束下没有可行课表。"] + suggestions,
+        }
+    if status == cp_model.UNKNOWN:
+        return {
+            "ok": False,
+            "errorKind": "timeout",
+            "errors": ["求解超时：60 秒内未找到可行课表，请稍后重试或检查约束设置。"],
+            "report": ["求解超时：60 秒内未找到可行课表，请稍后重试或检查约束设置。"],
         }
 
     schedule = {}
