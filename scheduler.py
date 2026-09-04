@@ -542,7 +542,13 @@ def solve_schedule(data, settings, variant=None):
                         for period in window
                         if (cls, day, period, subject) in assign
                     ]
-                    model.Add(sum(vars_for_window) + fixed_count <= consecutive_max)
+                    if vars_for_window:
+                        window_size = len(vars_for_window)
+                        auto_sum = sum(vars_for_window)
+                        has_auto = model.NewBoolVar(f"auto_{cls}_{day}_{start}_{subject}")
+                        model.Add(auto_sum >= has_auto)
+                        model.Add(auto_sum <= window_size * has_auto)
+                        model.Add(auto_sum + fixed_count <= consecutive_max + (1 - has_auto) * window_size)
 
     pair_vars = []
     for cls in data.classes:
@@ -710,21 +716,28 @@ def validate_result(data, settings, result):
                     issues.append(
                         f"{cls} {data.days[day]} 的 {subject} 达到 {day_count} 节，超过上限 {daily_max}"
                     )
-            sequence = [
-                cells.get(slot_key(day, period), {}).get("subject", "")
-                for period in range(data.n_slots)
-            ]
-            run = 1
-            for idx in range(1, len(sequence)):
-                if sequence[idx] and sequence[idx] == sequence[idx - 1]:
-                    run += 1
-                    if run > consecutive_max:
-                        issues.append(
-                            f"{cls} {data.days[day]} 的 {sequence[idx]} 连堂达到 {run} 节，超过上限 {consecutive_max}"
-                        )
-                        run = 1
+            run_cells = []
+
+            def check_run():
+                if not run_cells:
+                    return
+                subject = run_cells[0].get("subject", "")
+                if len(run_cells) > consecutive_max and any(
+                    cell.get("source") != "fixed" for cell in run_cells
+                ):
+                    issues.append(
+                        f"{cls} {data.days[day]} 的 {subject} 连堂达到 {len(run_cells)} 节，超过上限 {consecutive_max}"
+                    )
+
+            for period in range(data.n_slots):
+                cell = cells.get(slot_key(day, period), {})
+                subject = cell.get("subject", "")
+                if subject and run_cells and run_cells[-1].get("subject") == subject:
+                    run_cells.append(cell)
                 else:
-                    run = 1
+                    check_run()
+                    run_cells = [cell] if subject else []
+            check_run()
     return sorted(set(issues))
 
 
