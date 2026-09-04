@@ -99,6 +99,46 @@ function showToast(message) {
   toastTimer = setTimeout(() => toast.classList.add("hidden"), 2000);
 }
 
+const BACKUP_KEY = "paike_backup_v1";
+const AUTO_UPLOAD_KEY = "paike_auto_uploaded";
+
+function readBackup() {
+  try {
+    return JSON.parse(localStorage.getItem(BACKUP_KEY) || "null") || {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function writeBackup(partial) {
+  const current = readBackup();
+  const next = { ...current, ...partial };
+  try {
+    localStorage.setItem(BACKUP_KEY, JSON.stringify(next));
+  } catch (error) {
+    console.warn("浏览器备份保存失败", error);
+  }
+}
+
+function clearBackup() {
+  localStorage.removeItem(BACKUP_KEY);
+  sessionStorage.removeItem(AUTO_UPLOAD_KEY);
+}
+
+function mergeSavedSettings(saved, current) {
+  const result = {
+    ...current,
+    ...saved,
+    rules: { ...current.rules, ...(saved.rules || {}) },
+    titles: { ...current.titles, ...(saved.titles || {}) },
+    preferredConsecutive: {
+      ...current.preferredConsecutive,
+      ...(saved.preferredConsecutive || {}),
+    },
+  };
+  return result;
+}
+
 async function init() {
   const payload = await apiGet("/api/data");
   if (!payload.ok) {
@@ -108,6 +148,26 @@ async function init() {
   DATA = payload.data;
   SETTINGS = payload.settings;
   DATA_SOURCE = payload.dataSource || { name: "基本数据.xlsx", isDemo: true };
+
+  const backup = readBackup();
+  if (backup.contentBase64 && !backup.data) {
+    const parsePayload = await apiPost("/api/parse", {
+      filename: backup.filename || "upload.xlsx",
+      contentBase64: backup.contentBase64,
+    });
+    if (parsePayload.ok) {
+      backup.data = parsePayload.data;
+      writeBackup({ data: parsePayload.data });
+    }
+  }
+  if (backup.contentBase64 && backup.data) {
+    DATA = backup.data;
+    DATA_SOURCE = { name: backup.filename || "上传数据.xlsx", isDemo: false };
+    SETTINGS = mergeSavedSettings(backup.settings || {}, SETTINGS);
+  } else if (backup.settings) {
+    SETTINGS = mergeSavedSettings(backup.settings, SETTINGS);
+  }
+  sessionStorage.removeItem(AUTO_UPLOAD_KEY);
 
   $("dataStatus").textContent = "已读取";
   populateClassSelect("blockClassSelect", setBlockClass);
@@ -222,7 +282,7 @@ function renderDataSourceInfo() {
   if (info.isDemo) {
     $("dataSourceInfo").innerHTML = "当前为演示数据，可上传自己的表格后立即使用。";
   } else {
-    $("dataSourceInfo").innerHTML = `当前数据：${esc(info.name)}`;
+    $("dataSourceInfo").innerHTML = `已读取 ${esc(info.name)}`;
   }
 }
 
@@ -466,9 +526,9 @@ function renderResult() {
   renderTeacherResultGrid();
   renderReport();
   if (RESULT.status === "OPTIMAL") {
-    $("solveStatus").textContent = "排课完成：OPTIMAL，已证明最优，可在班级课表中拖动调课。";
+    $("solveStatus").textContent = "排课完成：OPTIMAL，可在班级课表中拖动调课。";
   } else {
-    $("solveStatus").textContent = "排课完成：FEASIBLE，可行方案（未证明最优），可在班级课表中拖动调课。";
+    $("solveStatus").textContent = "排课完成：FEASIBLE，可在班级课表中拖动调课。";
   }
 }
 
@@ -688,11 +748,7 @@ function deleteManual(cls, key) {
 function saveSettings() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
-    try {
-      await apiPost("/api/save", { settings: SETTINGS });
-    } catch (error) {
-      console.error(error);
-    }
+    writeBackup({ settings: SETTINGS });
   }, 250);
 }
 
@@ -709,15 +765,21 @@ function showErrors(errors) {
 
 async function runSolve() {
   if (!DATA) return;
-  $("solveStatus").textContent = "正在排课...";
+  $("solveStatus").textContent = "正在排课...最长3分钟...";
   showErrors([]);
   $("solveButton").disabled = true;
   try {
     solveVariant += 1;
-    const payload = await apiPost("/api/solve", { settings: SETTINGS, variant: solveVariant });
+    const backup = readBackup();
+    const solveBody = { settings: SETTINGS, variant: solveVariant };
+    if (backup.contentBase64) {
+      solveBody.fileBase64 = backup.contentBase64;
+      solveBody.filename = backup.filename || "upload.xlsx";
+    }
+    const payload = await apiPost("/api/solve", solveBody);
     if (!payload.ok) {
       if (payload.errorKind === "timeout") {
-        $("solveStatus").textContent = "排课超时：未在 60 秒内找到方案，请稍后重试。";
+        $("solveStatus").textContent = "排课超时：未在 3 分钟内找到方案，请稍后重试。";
       } else if (payload.errorKind === "infeasible") {
         $("solveStatus").textContent = "排课失败：当前约束下没有可行课表。";
       } else {
@@ -730,7 +792,7 @@ async function runSolve() {
       (cls) => !payload.schedule || !payload.schedule[cls]
     );
     if (missingClasses.length) {
-      $("solveStatus").textContent = "页面数据与服务器不一致，请刷新页面后重新上传或设置。";
+      $("solveStatus").textContent = "浏览器备份与服务器解析结果不一致，请重新选择文件。";
       showErrors([`以下班级在服务器结果中不存在：${missingClasses.join("、")}`]);
       return;
     }
@@ -762,10 +824,16 @@ async function exportWorkbook() {
   if (!RESULT) return;
   SETTINGS.titles.classSuffix = $("classTitleInput").value.trim();
   SETTINGS.titles.teacherSuffix = $("teacherTitleInput").value.trim();
-  const payload = await apiPost("/api/export", {
+  const backup = readBackup();
+  const exportBody = {
     settings: SETTINGS,
     result: RESULT.schedule,
-  });
+  };
+  if (backup.contentBase64) {
+    exportBody.fileBase64 = backup.contentBase64;
+    exportBody.filename = backup.filename || "upload.xlsx";
+  }
+  const payload = await apiPost("/api/export", exportBody);
   if (!payload.ok) {
     showErrors([payload.error || "导出失败"]);
     return;
@@ -1069,11 +1137,17 @@ function attachEvents() {
     const buffer = await file.arrayBuffer();
     const binary = new Uint8Array(buffer).reduce((acc, byte) => acc + String.fromCharCode(byte), "");
     const contentBase64 = btoa(binary);
-    const payload = await apiPost("/api/upload", { filename: file.name, contentBase64 });
+    const payload = await apiPost("/api/parse", { filename: file.name, contentBase64 });
     if (!payload.ok) {
       showErrors([payload.error || "上传失败"]);
       return;
     }
+    writeBackup({
+      filename: file.name,
+      contentBase64,
+      data: payload.data,
+      settings: payload.settings || {},
+    });
     location.reload();
   });
 
@@ -1082,6 +1156,7 @@ function attachEvents() {
   });
 
   $("resetData").addEventListener("click", async () => {
+    clearBackup();
     await apiPost("/api/reset-data", {});
     location.reload();
   });
