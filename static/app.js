@@ -607,11 +607,12 @@ function validateResultLocal(schedule) {
   const dailyMax = SETTINGS.rules.dailyMax;
   const consecutiveMax = SETTINGS.rules.consecutiveMax;
   for (const cls of DATA.classes) {
+    const classCells = result[cls] || {};
     for (let day = 0; day < DATA.days.length; day++) {
       for (const subject of DATA.subjects) {
         let dayCount = 0;
         for (let period = 0; period < DATA.nSlots; period++) {
-          const cell = result[cls][slotKey(day, period)];
+          const cell = classCells[slotKey(day, period)];
           if (cell && cell.subject === subject) dayCount += 1;
         }
         if (dayCount > dailyMax) {
@@ -631,7 +632,7 @@ function validateResultLocal(schedule) {
         }
       };
       for (let period = 0; period < DATA.nSlots; period++) {
-        const cell = result[cls][slotKey(day, period)];
+        const cell = classCells[slotKey(day, period)];
         if (cell && runCells.length && runCells[runCells.length - 1].subject === cell.subject) {
           runCells.push(cell);
         } else {
@@ -723,6 +724,14 @@ async function runSolve() {
         $("solveStatus").textContent = "排课失败：请先检查设置。";
       }
       showErrors(payload.errors || payload.report || []);
+      return;
+    }
+    const missingClasses = DATA.classes.filter(
+      (cls) => !payload.schedule || !payload.schedule[cls]
+    );
+    if (missingClasses.length) {
+      $("solveStatus").textContent = "页面数据与服务器不一致，请刷新页面后重新上传或设置。";
+      showErrors([`以下班级在服务器结果中不存在：${missingClasses.join("、")}`]);
       return;
     }
     RESULT = payload;
