@@ -618,20 +618,28 @@ function validateResultLocal(schedule) {
           issues.push(`${cls} ${DATA.days[day]} 的 ${subject} 达到 ${dayCount} 节，超过上限 ${dailyMax}`);
         }
       }
-      let run = 1;
-      for (let period = 1; period < DATA.nSlots; period++) {
-        const previous = result[cls][slotKey(day, period - 1)];
-        const current = result[cls][slotKey(day, period)];
-        if (current && previous && current.subject === previous.subject) {
-          run += 1;
-          if (run > consecutiveMax) {
-            issues.push(`${cls} ${DATA.days[day]} 的 ${current.subject} 连堂达到 ${run} 节，超过上限 ${consecutiveMax}`);
-            run = 1;
-          }
+      let runCells = [];
+      const checkRun = () => {
+        if (!runCells.length) return;
+        if (
+          runCells.length > consecutiveMax &&
+          runCells.some((cell) => cell.source !== "fixed")
+        ) {
+          issues.push(
+            `${cls} ${DATA.days[day]} 的 ${runCells[0].subject} 连堂达到 ${runCells.length} 节，超过上限 ${consecutiveMax}`
+          );
+        }
+      };
+      for (let period = 0; period < DATA.nSlots; period++) {
+        const cell = result[cls][slotKey(day, period)];
+        if (cell && runCells.length && runCells[runCells.length - 1].subject === cell.subject) {
+          runCells.push(cell);
         } else {
-          run = 1;
+          checkRun();
+          runCells = cell ? [cell] : [];
         }
       }
+      checkRun();
     }
   }
   return [...new Set(issues)];
