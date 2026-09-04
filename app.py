@@ -8,6 +8,7 @@ import mimetypes
 import os
 import re
 import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -30,6 +31,30 @@ SESSION_TTL_SECONDS = 3600
 MAX_SESSIONS = 200
 MAX_UPLOAD_BYTES = 1 * 1024 * 1024
 SOLVE_LOCK = threading.Lock()
+
+
+def _load_uploaded_data(filename, content_b64):
+    """解析用户上传的 Excel 内容，不持久保存到服务器。"""
+    if not filename.lower().endswith(".xlsx"):
+        raise ValueError("请上传 .xlsx 格式的模板文件")
+    try:
+        content = base64.b64decode(content_b64 or "")
+    except (ValueError, TypeError) as exc:
+        raise ValueError("文件内容无法解析") from exc
+    if not content or len(content) > MAX_UPLOAD_BYTES:
+        raise ValueError("文件大小不能超过 1MB")
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+        return scheduler.load_schedule_data(tmp_path)
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _cleanup_sessions():
@@ -121,8 +146,7 @@ class ScheduleHandler(BaseHTTPRequestHandler):
         return SESSION_ROOT / self.session_id
 
     def _data_file(self):
-        session_data = self._session_dir() / "data.xlsx"
-        return session_data if session_data.exists() else DATA_FILE
+        return DATA_FILE
 
     def _settings_file(self):
         return self._session_dir() / "settings.json"
@@ -187,48 +211,42 @@ class ScheduleHandler(BaseHTTPRequestHandler):
         path = parsed.path
         body = self._read_body()
         session_dir = self._ensure_session()
-        if path == "/api/upload":
+        if path in ("/api/upload", "/api/parse"):
             filename = str(body.get("filename") or "upload.xlsx")
             content_b64 = body.get("contentBase64") or ""
-            if not filename.lower().endswith(".xlsx"):
-                self._send_json({"error": "请上传 .xlsx 格式的模板文件"}, 400)
-                return
             try:
-                content = base64.b64decode(content_b64)
-            except (ValueError, TypeError):
-                self._send_json({"error": "文件内容无法解析"}, 400)
+                data = _load_uploaded_data(filename, content_b64)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, 400)
                 return
-            if not content or len(content) > MAX_UPLOAD_BYTES:
-                self._send_json({"error": "文件大小不能超过 1MB"}, 400)
-                return
-            tmp_target = session_dir / "data_upload_tmp.xlsx"
-            tmp_target.write_bytes(content)
-            try:
-                data = scheduler.load_schedule_data(tmp_target)
-            except Exception as exc:  # noqa: BLE001
-                tmp_target.unlink(missing_ok=True)
-                self._send_json({"error": f"模板格式不正确：{exc}"}, 400)
-                return
-            target = session_dir / "data.xlsx"
-            target.unlink(missing_ok=True)
-            os.replace(tmp_target, target)
             settings = scheduler.normalize_settings({}, data)
-            scheduler.save_settings(self._settings_file(), settings)
-            self._send_json(self._data_payload())
+            self._send_json(
+                {
+                    "ok": True,
+                    "data": data.to_dict(),
+                    "settings": scheduler.settings_to_json(settings),
+                    "dataSource": {"name": Path(filename).name, "isDemo": False},
+                }
+            )
             return
         if path == "/api/reset-data":
-            data_file = session_dir / "data.xlsx"
-            data_file.unlink(missing_ok=True)
             output_dir = session_dir / "output"
             if output_dir.exists():
                 shutil.rmtree(output_dir, ignore_errors=True)
-            data = scheduler.load_schedule_data(DATA_FILE)
-            settings = scheduler.normalize_settings({}, data)
-            scheduler.save_settings(self._settings_file(), settings)
             self._send_json(self._data_payload())
             return
         if path == "/api/solve":
-            data = scheduler.load_schedule_data(self._data_file())
+            file_b64 = body.get("fileBase64")
+            if file_b64:
+                try:
+                    data = _load_uploaded_data(
+                        str(body.get("filename") or "upload.xlsx"), file_b64
+                    )
+                except ValueError as exc:
+                    self._send_json({"error": str(exc)}, 400)
+                    return
+            else:
+                data = scheduler.load_schedule_data(DATA_FILE)
             settings = scheduler.normalize_settings(body.get("settings"), data)
             variant = body.get("variant")
             try:
@@ -240,13 +258,20 @@ class ScheduleHandler(BaseHTTPRequestHandler):
             self._send_json(result)
             return
         if path == "/api/save":
-            data = scheduler.load_schedule_data(self._data_file())
-            settings = scheduler.normalize_settings(body.get("settings"), data)
-            scheduler.save_settings(self._settings_file(), settings)
             self._send_json({"ok": True})
             return
         if path == "/api/export":
-            data = scheduler.load_schedule_data(self._data_file())
+            file_b64 = body.get("fileBase64")
+            if file_b64:
+                try:
+                    data = _load_uploaded_data(
+                        str(body.get("filename") or "upload.xlsx"), file_b64
+                    )
+                except ValueError as exc:
+                    self._send_json({"error": str(exc)}, 400)
+                    return
+            else:
+                data = scheduler.load_schedule_data(DATA_FILE)
             settings = scheduler.normalize_settings(body.get("settings"), data)
             result = body.get("result") or {}
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -280,16 +305,17 @@ class ScheduleHandler(BaseHTTPRequestHandler):
             data = scheduler.load_schedule_data(self._data_file())
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
-        settings = scheduler.load_settings(self._settings_file(), data)
-        path = self._data_file()
+        settings = scheduler.normalize_settings({}, data)
+        path = DATA_FILE
+        display_name = DATA_FILE.name
         return {
             "ok": True,
             "data": data.to_dict(),
             "settings": scheduler.settings_to_json(settings),
             "dataSource": {
                 "path": str(path),
-                "name": path.name,
-                "isDemo": path.resolve() == DATA_FILE.resolve(),
+                "name": display_name,
+                "isDemo": True,
             },
         }
 

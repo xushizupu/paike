@@ -570,7 +570,7 @@ def solve_schedule(data, settings, variant=None):
         model.Maximize(sum(pair_vars))
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 60.0
+    solver.parameters.max_time_in_seconds = 180.0
     solver.parameters.num_search_workers = 8
     seed = variant if variant is not None else int(time.time_ns() % (2**31))
     solver.parameters.random_seed = seed
@@ -588,8 +588,8 @@ def solve_schedule(data, settings, variant=None):
         return {
             "ok": False,
             "errorKind": "timeout",
-            "errors": ["求解超时：60 秒内未找到可行课表，请稍后重试或检查约束设置。"],
-            "report": ["求解超时：60 秒内未找到可行课表，请稍后重试或检查约束设置。"],
+            "errors": ["求解超时：3 分钟内未找到可行课表，请稍后重试或检查约束设置。"],
+            "report": ["求解超时：3 分钟内未找到可行课表，请稍后重试或检查约束设置。"],
         }
 
     schedule = {}
