@@ -10,6 +10,7 @@ let currentFixedClass = "";
 let currentResultClass = "";
 let currentTeacher = "";
 let currentSubject = "";
+let currentPreferredClass = "";
 let dragSource = null;
 let saveTimer = null;
 let pendingTab = null;
@@ -237,6 +238,15 @@ function populateSubjectSelect() {
   $("subjectSelect").addEventListener("change", () => {
     currentSubject = $("subjectSelect").value;
     renderSubjectGrid();
+  });
+}
+
+function attachPreferredClassSelect() {
+  const select = $("preferredClassSelect");
+  if (!select) return;
+  select.addEventListener("change", () => {
+    currentPreferredClass = select.value;
+    renderPreferredSubjectList();
   });
 }
 
@@ -479,16 +489,30 @@ function renderTeacherGrid() {
 }
 
 function renderRules() {
+  populatePreferredClassSelect();
   $("dailyMaxInput").value = SETTINGS.rules.dailyMax;
   $("consecutiveMaxInput").value = SETTINGS.rules.consecutiveMax;
   $("preferredConsecutiveInput").value = 2;
   renderPreferredSubjectList();
 }
 
+function populatePreferredClassSelect() {
+  if (!DATA) return;
+  const select = $("preferredClassSelect");
+  select.innerHTML = DATA.classes
+    .map((cls) => `<option value="${esc(cls)}">${esc(cls)}</option>`)
+    .join("");
+  if (!currentPreferredClass || !DATA.classes.includes(currentPreferredClass)) {
+    currentPreferredClass = DATA.classes[0] || "";
+  }
+  select.value = currentPreferredClass;
+}
+
 function renderPreferredSubjectList() {
+  const classMap = SETTINGS.preferredConsecutive[currentPreferredClass] || {};
   $("preferredSubjectList").innerHTML = DATA.subjects
     .map((subject) => {
-      const count = SETTINGS.preferredConsecutive[subject] || 0;
+      const count = classMap[subject] || 0;
       return `<label>
         <input type="checkbox" value="${esc(subject)}" ${count ? "checked" : ""}>
         <span>${esc(subject)}</span>
@@ -503,9 +527,10 @@ function applyPreferredSelection() {
   const max = SETTINGS.rules.consecutiveMax;
   const count = Math.min(requested, max);
   const selected = [...document.querySelectorAll("#preferredSubjectList input:checked")].map((input) => input.value);
-  SETTINGS.preferredConsecutive = {};
+  if (!currentPreferredClass) return;
+  SETTINGS.preferredConsecutive[currentPreferredClass] = {};
   selected.forEach((subject) => {
-    SETTINGS.preferredConsecutive[subject] = count;
+    SETTINGS.preferredConsecutive[currentPreferredClass][subject] = count;
   });
   renderPreferredSubjectList();
 }
@@ -765,7 +790,7 @@ function showErrors(errors) {
 
 async function runSolve() {
   if (!DATA) return;
-  $("solveStatus").textContent = "正在排课...最长3分钟...";
+  $("solveStatus").textContent = "正在提交排课任务...";
   showErrors([]);
   $("solveButton").disabled = true;
   try {
@@ -776,35 +801,71 @@ async function runSolve() {
       solveBody.fileBase64 = backup.contentBase64;
       solveBody.filename = backup.filename || "upload.xlsx";
     }
-    const payload = await apiPost("/api/solve", solveBody);
-    if (!payload.ok) {
-      if (payload.errorKind === "timeout") {
-        $("solveStatus").textContent = "排课超时：未在 3 分钟内找到方案，请稍后重试。";
-      } else if (payload.errorKind === "infeasible") {
-        $("solveStatus").textContent = "排课失败：当前约束下没有可行课表。";
-      } else {
-        $("solveStatus").textContent = "排课失败：请先检查设置。";
-      }
-      showErrors(payload.errors || payload.report || []);
+    const queued = await apiPost("/api/solve", solveBody);
+    if (!queued.ok) {
+      $("solveStatus").textContent = "排课任务提交失败";
+      showErrors([queued.error || "服务器无响应"]);
       return;
     }
-    const missingClasses = DATA.classes.filter(
-      (cls) => !payload.schedule || !payload.schedule[cls]
-    );
-    if (missingClasses.length) {
-      $("solveStatus").textContent = "浏览器备份与服务器解析结果不一致，请重新选择文件。";
-      showErrors([`以下班级在服务器结果中不存在：${missingClasses.join("、")}`]);
+    if (queued.queued) {
+      await pollSolveTask(queued.taskId);
       return;
     }
-    RESULT = payload;
-    renderResult();
-    saveSettings();
+    applySolvePayload(queued);
   } catch (error) {
     $("solveStatus").textContent = "排课失败";
     showErrors([String(error)]);
   } finally {
     $("solveButton").disabled = false;
   }
+}
+
+async function pollSolveTask(taskId) {
+  while (true) {
+    const state = await apiGet(`/api/task?taskId=${encodeURIComponent(taskId)}`);
+    if (!state.ok) {
+      $("solveStatus").textContent = "排课任务查询失败";
+      showErrors([state.error || "任务不存在"]);
+      return;
+    }
+    if (state.status === "queued") {
+      const ahead = Math.max(0, (state.position || 1) - 1);
+      $("solveStatus").textContent = ahead
+        ? `正在排队，前面还有 ${ahead} 位用户...`
+        : "正在排队，即将开始排课...";
+    } else if (state.status === "running") {
+      $("solveStatus").textContent = "正在排课，请稍候...";
+    } else {
+      applySolvePayload(state);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+function applySolvePayload(payload) {
+  if (!payload.ok) {
+    if (payload.errorKind === "timeout") {
+      $("solveStatus").textContent = "排课超时：5 分钟内未找到方案，请稍后重试。";
+    } else if (payload.errorKind === "infeasible") {
+      $("solveStatus").textContent = "排课失败：当前约束下没有可行课表。";
+    } else {
+      $("solveStatus").textContent = "排课失败：请先检查设置。";
+    }
+    showErrors(payload.errors || payload.report || []);
+    return;
+  }
+  const missingClasses = DATA.classes.filter(
+    (cls) => !payload.schedule || !payload.schedule[cls]
+  );
+  if (missingClasses.length) {
+    $("solveStatus").textContent = "浏览器备份与服务器解析结果不一致，请重新选择文件。";
+    showErrors([`以下班级在服务器结果中不存在：${missingClasses.join("、")}`]);
+    return;
+  }
+  RESULT = payload;
+  renderResult();
+  saveSettings();
 }
 
 function resetResult() {
@@ -951,6 +1012,7 @@ function startDragMove(sourceTd, targetTd) {
 }
 
 function attachEvents() {
+  attachPreferredClassSelect();
   document.querySelectorAll("#tabs .tab").forEach((button) => {
     button.addEventListener("click", () => switchTab(button.dataset.tab));
   });
