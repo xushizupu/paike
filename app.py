@@ -12,10 +12,11 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import excel_io
 import scheduler
@@ -31,6 +32,77 @@ SESSION_TTL_SECONDS = 3600
 MAX_SESSIONS = 200
 MAX_UPLOAD_BYTES = 1 * 1024 * 1024
 SOLVE_LOCK = threading.Lock()
+QUEUE_COND = threading.Condition()
+SOLVE_QUEUE = deque()
+SOLVE_TASKS = {}
+SOLVE_TASK_COUNTER = 0
+
+
+class SolveTask:
+    def __init__(self, task_id, body):
+        self.id = task_id
+        self.body = body
+        self.status = "queued"
+        self.position = 1
+        self.result = None
+
+
+def _start_solve_task(body):
+    global SOLVE_TASK_COUNTER
+    with QUEUE_COND:
+        SOLVE_TASK_COUNTER += 1
+        task_id = uuid.uuid4().hex
+        task = SolveTask(task_id, body)
+        SOLVE_TASKS[task_id] = task
+        SOLVE_QUEUE.append(task)
+        task.position = len(SOLVE_QUEUE)
+    threading.Thread(target=_execute_solve_task, args=(task,), daemon=True).start()
+    return task
+
+
+def _execute_solve_task(task):
+    with QUEUE_COND:
+        while SOLVE_QUEUE and SOLVE_QUEUE[0] is not task:
+            QUEUE_COND.wait()
+        task.status = "running"
+        for idx, item in enumerate(SOLVE_QUEUE, start=1):
+            item.position = idx
+    try:
+        body = task.body
+        file_b64 = body.get("fileBase64")
+        if file_b64:
+            data = _load_uploaded_data(str(body.get("filename") or "upload.xlsx"), file_b64)
+        else:
+            data = scheduler.load_schedule_data(DATA_FILE)
+        settings = scheduler.normalize_settings(body.get("settings"), data)
+        variant = body.get("variant")
+        try:
+            variant = int(variant)
+        except (TypeError, ValueError):
+            variant = None
+        with SOLVE_LOCK:
+            result = scheduler.solve_schedule(data, settings, variant=variant)
+        task.result = result
+    except Exception as exc:  # noqa: BLE001
+        task.result = {"ok": False, "errorKind": "server", "errors": [str(exc)]}
+    finally:
+        task.status = "done" if task.result is not None else "error"
+        with QUEUE_COND:
+            if SOLVE_QUEUE and SOLVE_QUEUE[0] is task:
+                SOLVE_QUEUE.popleft()
+            else:
+                try:
+                    SOLVE_QUEUE.remove(task)
+                except ValueError:
+                    pass
+            for idx, item in enumerate(SOLVE_QUEUE, start=1):
+                item.position = idx
+            QUEUE_COND.notify_all()
+        if len(SOLVE_TASKS) > 200:
+            for old_id in list(SOLVE_TASKS)[:50]:
+                old_task = SOLVE_TASKS.get(old_id)
+                if old_task and old_task.status not in ("queued", "running"):
+                    SOLVE_TASKS.pop(old_id, None)
 
 
 def _load_uploaded_data(filename, content_b64):
@@ -200,6 +272,24 @@ class ScheduleHandler(BaseHTTPRequestHandler):
                     usage = {}
             self._send_json({"ok": True, "usage": usage})
             return
+        if path == "/api/task":
+            query = parse_qs(urlparse(self.path).query)
+            task_id = (query.get("taskId") or [None])[0]
+            task = SOLVE_TASKS.get(task_id)
+            if not task:
+                self._send_json({"ok": False, "error": "任务不存在或已过期"}, 404)
+                return
+            if task.status in ("queued", "running"):
+                self._send_json(
+                    {
+                        "ok": True,
+                        "status": task.status,
+                        "position": task.position,
+                    }
+                )
+            else:
+                self._send_json(task.result or {"ok": False, "error": "任务无结果"})
+            return
         if path == "/api/template":
             content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             self._send_bytes(DATA_FILE.read_bytes(), content_type, "paike_template.xlsx")
@@ -236,26 +326,15 @@ class ScheduleHandler(BaseHTTPRequestHandler):
             self._send_json(self._data_payload())
             return
         if path == "/api/solve":
-            file_b64 = body.get("fileBase64")
-            if file_b64:
-                try:
-                    data = _load_uploaded_data(
-                        str(body.get("filename") or "upload.xlsx"), file_b64
-                    )
-                except ValueError as exc:
-                    self._send_json({"error": str(exc)}, 400)
-                    return
-            else:
-                data = scheduler.load_schedule_data(DATA_FILE)
-            settings = scheduler.normalize_settings(body.get("settings"), data)
-            variant = body.get("variant")
-            try:
-                variant = int(variant)
-            except (TypeError, ValueError):
-                variant = None
-            with SOLVE_LOCK:
-                result = scheduler.solve_schedule(data, settings, variant=variant)
-            self._send_json(result)
+            task = _start_solve_task(body)
+            self._send_json(
+                {
+                    "ok": True,
+                    "queued": True,
+                    "taskId": task.id,
+                    "position": task.position,
+                }
+            )
             return
         if path == "/api/save":
             self._send_json({"ok": True})

@@ -255,14 +255,28 @@ def normalize_settings(raw, data=None):
     }
 
     preferred = raw.get("preferredConsecutive") or {}
-    for subject, value in preferred.items():
-        if data is not None and subject not in data.subjects:
-            continue
-        try:
-            n = int(value)
-        except (TypeError, ValueError):
-            continue
-        settings["preferredConsecutive"][subject] = max(1, min(12, n))
+    for class_key, value in preferred.items():
+        if isinstance(value, dict) and data is not None and class_key in data.classes:
+            class_map = {}
+            for subject, n_value in value.items():
+                if subject not in data.subjects:
+                    continue
+                try:
+                    n = int(n_value)
+                except (TypeError, ValueError):
+                    continue
+                class_map[subject] = max(1, min(12, n))
+            if class_map:
+                settings["preferredConsecutive"][class_key] = class_map
+        elif data is not None and class_key in data.subjects:
+            # 兼容旧版：科目级全局配置转为所有班级。
+            try:
+                n = int(value)
+            except (TypeError, ValueError):
+                continue
+            n = max(1, min(12, n))
+            for cls in data.classes:
+                settings["preferredConsecutive"].setdefault(cls, {})[class_key] = n
 
     return settings
 
@@ -335,13 +349,17 @@ def validate_settings(data, settings):
 
     daily_max = settings["rules"]["dailyMax"]
     consecutive_max = settings["rules"]["consecutiveMax"]
-    for subject, count in settings["preferredConsecutive"].items():
-        if subject not in data.subjects:
-            errors.append(f"优先连堂科目 {subject} 不存在")
-        if count > consecutive_max:
-            errors.append(
-                f"{subject} 优先连堂 {count} 节，超过同科连堂上限 {consecutive_max} 节"
-            )
+    for cls, mapping in settings["preferredConsecutive"].items():
+        if cls not in data.classes:
+            errors.append(f"优先连堂班级 {cls} 不存在")
+            continue
+        for subject, count in mapping.items():
+            if subject not in data.subjects:
+                errors.append(f"{cls} 的优先连堂科目 {subject} 不存在")
+            if count > consecutive_max:
+                errors.append(
+                    f"{cls} 的 {subject} 优先连堂 {count} 节，超过同科连堂上限 {consecutive_max} 节"
+                )
     for cls in data.classes:
         fixed_counts = Counter()
         for slot, subject in locked.get(cls, {}).items():
@@ -552,8 +570,9 @@ def solve_schedule(data, settings, variant=None):
 
     pair_vars = []
     for cls in data.classes:
+        preferred_map = settings["preferredConsecutive"].get(cls, {})
         for day in range(len(data.days)):
-            for subject, preferred_count in settings["preferredConsecutive"].items():
+            for subject, preferred_count in preferred_map.items():
                 if preferred_count < 2:
                     continue
                 for period in range(data.n_slots - 1):
@@ -570,7 +589,7 @@ def solve_schedule(data, settings, variant=None):
         model.Maximize(sum(pair_vars))
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 180.0
+    solver.parameters.max_time_in_seconds = 300.0
     solver.parameters.num_search_workers = 8
     seed = variant if variant is not None else int(time.time_ns() % (2**31))
     solver.parameters.random_seed = seed
@@ -588,8 +607,8 @@ def solve_schedule(data, settings, variant=None):
         return {
             "ok": False,
             "errorKind": "timeout",
-            "errors": ["求解超时：3 分钟内未找到可行课表，请稍后重试或检查约束设置。"],
-            "report": ["求解超时：3 分钟内未找到可行课表，请稍后重试或检查约束设置。"],
+            "errors": ["求解超时：5 分钟内未找到可行课表，请稍后重试或检查约束设置。"],
+            "report": ["求解超时：5 分钟内未找到可行课表，请稍后重试或检查约束设置。"],
         }
 
     schedule = {}
