@@ -23,6 +23,13 @@ body {
   font-size: 14px;
 }
 
+.footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 16px 20px 28px;
+}
+
 .topbar {
   position: sticky;
   top: 0;
@@ -46,6 +53,31 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  flex: 1;
+  justify-content: center;
+}
+
+.header-links {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: none;
+}
+
+.header-links a {
+  border: 1px solid #b6c4d4;
+  background: #ffffff;
+  color: var(--text);
+  text-decoration: none;
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.header-links a:hover {
+  background: #f0f4f9;
 }
 
 .tab-arrow {

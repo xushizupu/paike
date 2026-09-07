@@ -528,11 +528,27 @@ function applyPreferredSelection() {
   const count = Math.min(requested, max);
   const selected = [...document.querySelectorAll("#preferredSubjectList input:checked")].map((input) => input.value);
   if (!currentPreferredClass) return;
-  SETTINGS.preferredConsecutive[currentPreferredClass] = {};
+  const classMap = {};
   selected.forEach((subject) => {
-    SETTINGS.preferredConsecutive[currentPreferredClass][subject] = count;
+    classMap[subject] = count;
+  });
+  let targets = [currentPreferredClass];
+  if ($("preferredApplyAll").checked) {
+    targets = DATA.classes;
+  } else if ($("preferredApplyGrade").checked) {
+    targets = sameGradeClasses(currentPreferredClass);
+  }
+  targets.forEach((cls) => {
+    SETTINGS.preferredConsecutive[cls] = { ...classMap };
   });
   renderPreferredSubjectList();
+  if ($("preferredApplyAll").checked) {
+    showToast(`已应用到全部 ${targets.length} 个班`);
+  } else if ($("preferredApplyGrade").checked) {
+    showToast(`已应用到同年级 ${targets.length} 个班`);
+  } else if (selected.length) {
+    showToast(`已应用到${currentPreferredClass}`);
+  }
 }
 
 function renderResult() {

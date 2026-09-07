@@ -18,6 +18,10 @@
       <button class="tab" data-tab="rules">其它规则</button><span class="tab-arrow">→</span>
       <button class="tab" data-tab="result">排课与导出</button>
     </nav>
+    <div class="header-links">
+      <a id="videoTutorialLink" href="https://example.com/video" target="_blank" rel="noopener">视频教程</a>
+      <a id="downloadLocalLink" href="https://example.com/download" target="_blank" rel="noopener">下载本地版</a>
+    </div>
   </header>
 
   <main>
@@ -118,6 +122,8 @@
       <div class="actions preferred-actions">
         <select id="preferredClassSelect"></select>
         <label>优先连堂节数 <input type="number" id="preferredConsecutiveInput" min="1" max="12"></label>
+        <label class="check-label"><input type="checkbox" id="preferredApplyGrade"> 应用到全年级</label>
+        <label class="check-label"><input type="checkbox" id="preferredApplyAll"> 应用到全部班级</label>
         <button id="applyPreferredConsecutive" class="btn">应用到选中课程</button>
       </div>
       <div id="preferredSubjectList" class="subject-check-list"></div>
@@ -163,6 +169,10 @@
       <div id="usage-result" class="usage"></div>
     </section>
   </main>
+
+  <footer class="footer">
+    本软件由yang开发，联系方式908105615
+  </footer>
 
   <div id="blockWarnModal" class="modal hidden">
     <div class="modal-content">
