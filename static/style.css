@@ -1,9 +1,9 @@
 :root {
-  --bg: #f4f6f8;
+  --bg: #f7f9fc;
   --panel: #ffffff;
-  --line: #dbe1e8;
-  --text: #1f2933;
-  --muted: #64748b;
+  --line: #c9d3df;
+  --text: #111827;
+  --muted: #475569;
   --primary: #2563eb;
   --primary-dark: #1d4ed8;
   --danger: #b91c1c;
@@ -19,14 +19,15 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
-  font-size: 14px;
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  font-size: 15px;
+  text-rendering: optimizeLegibility;
 }
 
 .footer {
   text-align: center;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   padding: 16px 20px 28px;
 }
 
@@ -37,14 +38,15 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 12px 24px;
+  gap: 18px;
+  padding: 14px 28px;
   background: #ffffff;
   border-bottom: 1px solid var(--line);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
 }
 
 .brand {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 700;
   letter-spacing: 0;
 }
@@ -52,7 +54,7 @@ body {
 .tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   flex: 1;
   justify-content: center;
 }
@@ -66,13 +68,14 @@ body {
 }
 
 .header-links a {
-  border: 1px solid #b6c4d4;
+  border: 1px solid #aebdce;
   background: #ffffff;
   color: var(--text);
   text-decoration: none;
   border-radius: 6px;
-  padding: 7px 12px;
-  font-size: 13px;
+  padding: 9px 14px;
+  font-size: 14px;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -93,10 +96,11 @@ body {
   border: 1px solid var(--line);
   background: #ffffff;
   color: var(--text);
-  padding: 7px 13px;
+  padding: 9px 15px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .tab.active,
@@ -109,7 +113,7 @@ body {
 main {
   max-width: 1280px;
   margin: 0 auto;
-  padding: 20px 24px 60px;
+  padding: 24px 28px 70px;
 }
 
 .panel {
@@ -131,7 +135,8 @@ main {
 
 h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: 22px;
+  font-weight: 700;
   letter-spacing: 0;
 }
 
@@ -145,7 +150,8 @@ h2 {
 
 .muted {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 14px;
+  line-height: 1.6;
   margin: 6px 0 12px;
 }
 
@@ -156,7 +162,9 @@ h2 {
 #teacherSelectedCount,
 #ruleStatus {
   text-align: center;
-  color: #2563eb;
+  color: var(--primary);
+  font-size: 15px;
+  font-weight: 600;
   margin: 8px 0;
 }
 
@@ -171,7 +179,8 @@ h2 {
   padding: 10px 18px;
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .toast.hidden {
@@ -183,9 +192,10 @@ h2 {
   background: #ffffff;
   color: var(--text);
   border-radius: 6px;
-  padding: 7px 14px;
+  padding: 9px 16px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .btn:hover {
@@ -223,8 +233,8 @@ input[type="number"],
 input[type="search"] {
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 7px 10px;
-  font-size: 13px;
+  padding: 9px 12px;
+  font-size: 14px;
   background: #ffffff;
   color: var(--text);
 }
@@ -233,7 +243,7 @@ input[type="search"] {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .card-grid {
@@ -251,14 +261,15 @@ input[type="search"] {
 }
 
 .stat-card .num {
-  font-size: 26px;
+  font-size: 30px;
   font-weight: 700;
   margin-top: 4px;
 }
 
 .stat-card .label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .warning-box,
@@ -287,7 +298,7 @@ input[type="search"] {
 }
 
 .section-title {
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 700;
   margin: 20px 0 10px;
 }
@@ -308,16 +319,18 @@ input[type="search"] {
 .schedule-grid th,
 .schedule-grid td {
   border: 1px solid var(--line);
-  padding: 7px 8px;
+  padding: 10px 10px;
   text-align: center;
   vertical-align: middle;
-  font-size: 12px;
-  min-width: 72px;
+  font-size: 14px;
+  line-height: 1.45;
+  min-width: 80px;
 }
 
 .schedule-grid th {
-  background: #edf2f8;
+  background: #e7eef8;
   font-weight: 700;
+  color: #0f172a;
   position: sticky;
   top: 0;
 }
@@ -328,8 +341,9 @@ input[type="search"] {
 
 .schedule-grid.compact th,
 .schedule-grid.compact td {
-  min-width: 52px;
-  padding: 5px 6px;
+  min-width: 58px;
+  padding: 8px 8px;
+  font-size: 14px;
 }
 
 .cell {
@@ -376,21 +390,23 @@ input[type="search"] {
 .cell .subject {
   display: block;
   font-weight: 700;
+  color: #0f172a;
 }
 
 .cell .teacher {
   display: block;
-  color: inherit;
-  opacity: 0.8;
+  color: #334155;
+  font-weight: 500;
 }
 
 .badge {
   display: inline-block;
   margin-left: 4px;
-  font-size: 10px;
-  padding: 1px 5px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.08);
+  background: rgba(15, 23, 42, 0.1);
 }
 
 .split {
@@ -427,7 +443,7 @@ input[type="search"] {
   gap: 7px;
   padding: 6px 8px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 14px;
   cursor: pointer;
 }
 
@@ -443,7 +459,7 @@ input[type="search"] {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .preferred-actions input {
@@ -484,7 +500,7 @@ input[type="search"] {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .rules-grid input {
@@ -499,7 +515,7 @@ input[type="search"] {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 #result .actions input {
@@ -540,7 +556,7 @@ input[type="search"] {
 
 .modal-head h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 18px;
 }
 
 .course-option {
@@ -552,6 +568,7 @@ input[type="search"] {
   border-radius: 6px;
   padding: 9px 12px;
   margin-bottom: 8px;
+  font-size: 14px;
 }
 
 .course-option .course-name {
@@ -577,14 +594,15 @@ input[type="search"] {
   border: 1px solid var(--line);
   border-radius: 8px;
   color: #334155;
-  font-size: 13px;
-  line-height: 1.9;
+  font-size: 14px;
+  line-height: 2;
 }
 
 .status-line {
-  min-height: 24px;
+  min-height: 28px;
   margin: 4px 0 12px;
   color: var(--muted);
+  font-size: 14px;
 }
 
 .result-tabs {
@@ -605,8 +623,8 @@ input[type="search"] {
 }
 
 #resultReport {
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 14px;
+  line-height: 1.9;
 }
 
 #resultReport .issue {
