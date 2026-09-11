@@ -824,7 +824,7 @@ async function runSolve() {
       return;
     }
     if (queued.queued) {
-      await pollSolveTask(queued.taskId);
+      await pollSolveTask(queued.taskId, solveBody);
       return;
     }
     applySolvePayload(queued);
@@ -836,10 +836,22 @@ async function runSolve() {
   }
 }
 
-async function pollSolveTask(taskId) {
+async function pollSolveTask(taskId, solveBody) {
+  let retryCount = 0;
   while (true) {
     const state = await apiGet(`/api/task?taskId=${encodeURIComponent(taskId)}`);
     if (!state.ok) {
+      if (retryCount < 2) {
+        retryCount += 1;
+        $("solveStatus").textContent = "排队任务已失效，正在自动重新提交...";
+        solveVariant += 1;
+        const retryBody = { ...solveBody, variant: solveVariant };
+        const requeued = await apiPost("/api/solve", retryBody);
+        if (requeued.ok && requeued.queued) {
+          taskId = requeued.taskId;
+          continue;
+        }
+      }
       $("solveStatus").textContent = "排课任务查询失败";
       showErrors([state.error || "任务不存在"]);
       return;
