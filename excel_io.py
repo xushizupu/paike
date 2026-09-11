@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+from io import BytesIO
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -218,4 +220,27 @@ def write_result_files(data, settings, result, output_dir, timestamp, suffix):
         path = output_dir / name
         wb.save(path)
         files.append({"name": name, "path": str(path)})
+    return issues, files
+
+
+def write_result_files_memory(data, settings, result, timestamp, suffix):
+    """在内存中生成三个工作簿，返回 Base64 内容。"""
+    settings = scheduler.normalize_settings(settings, data)
+    issues = scheduler.validate_result(data, settings, result)
+
+    workbooks = [
+        (_build_class_workbook(data, settings, result), f"班级课程表_{timestamp}_{suffix}.xlsx"),
+        (_build_teacher_workbook(data, settings, result), f"教师课程表_{timestamp}_{suffix}.xlsx"),
+        (_build_check_workbook(data, settings, result, issues), f"排课校验_{timestamp}_{suffix}.xlsx"),
+    ]
+    files = []
+    for workbook, name in workbooks:
+        buffer = BytesIO()
+        workbook.save(buffer)
+        files.append(
+            {
+                "name": name,
+                "contentBase64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+            }
+        )
     return issues, files
