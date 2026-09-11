@@ -809,7 +809,8 @@ async function runSolve() {
   $("solveStatus").textContent = "正在提交文件和排课规则...";
   showErrors([]);
   $("solveButton").disabled = true;
-  const queueTimer = startQueuePolling();
+  const queuePolling = startQueuePolling();
+  let solveSucceeded = false;
   try {
     solveVariant += 1;
     const backup = readBackup();
@@ -819,24 +820,26 @@ async function runSolve() {
       solveBody.filename = backup.filename || "upload.xlsx";
     }
     const payload = await apiPost("/api/solve", solveBody);
-    applySolvePayload(payload);
+    queuePolling.stop();
+    solveSucceeded = applySolvePayload(payload);
   } catch (error) {
     $("solveStatus").textContent = "排课请求中断，请重新点击自动排课。";
     showErrors([String(error)]);
   } finally {
-    clearInterval(queueTimer);
-    $("solveButton").disabled = false;
+    queuePolling.stop();
+    if (!solveSucceeded) $("solveButton").disabled = false;
   }
 }
 
 function startQueuePolling() {
   let inFlight = false;
-  return setInterval(async () => {
-    if (inFlight) return;
+  let active = true;
+  const timer = setInterval(async () => {
+    if (!active || inFlight) return;
     inFlight = true;
     try {
       const state = await apiGet("/api/queue-status");
-      if (!state.ok) return;
+      if (!active || !state.ok) return;
       if (state.total > 1) {
         $("solveStatus").textContent =
           `正在排队，当前共有 ${state.total} 个排课任务，前面等待 ${state.waiting} 人...`;
@@ -851,6 +854,12 @@ function startQueuePolling() {
       inFlight = false;
     }
   }, 1000);
+  return {
+    stop() {
+      active = false;
+      clearInterval(timer);
+    },
+  };
 }
 
 function applySolvePayload(payload) {
@@ -863,7 +872,7 @@ function applySolvePayload(payload) {
       $("solveStatus").textContent = "排课失败：请先检查设置。";
     }
     showErrors(payload.errors || payload.report || []);
-    return;
+    return false;
   }
   const missingClasses = DATA.classes.filter(
     (cls) => !payload.schedule || !payload.schedule[cls]
@@ -871,11 +880,12 @@ function applySolvePayload(payload) {
   if (missingClasses.length) {
     $("solveStatus").textContent = "浏览器备份与服务器解析结果不一致，请重新选择文件。";
     showErrors([`以下班级在服务器结果中不存在：${missingClasses.join("、")}`]);
-    return;
+    return false;
   }
   RESULT = payload;
   renderResult();
   saveSettings();
+  return true;
 }
 
 function resetResult() {
@@ -887,6 +897,7 @@ function resetResult() {
   $("resultReport").innerHTML = "";
   $("exportButton").disabled = true;
   $("resetResultButton").disabled = true;
+  $("solveButton").disabled = false;
   $("solveStatus").textContent = "";
   showErrors([]);
 }
