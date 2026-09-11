@@ -806,9 +806,10 @@ function showErrors(errors) {
 
 async function runSolve() {
   if (!DATA) return;
-  $("solveStatus").textContent = "正在提交排课任务...";
+  $("solveStatus").textContent = "正在提交文件和排课规则...";
   showErrors([]);
   $("solveButton").disabled = true;
+  const queueTimer = startQueuePolling();
   try {
     solveVariant += 1;
     const backup = readBackup();
@@ -817,58 +818,39 @@ async function runSolve() {
       solveBody.fileBase64 = backup.contentBase64;
       solveBody.filename = backup.filename || "upload.xlsx";
     }
-    const queued = await apiPost("/api/solve", solveBody);
-    if (!queued.ok) {
-      $("solveStatus").textContent = "排课任务提交失败";
-      showErrors([queued.error || "服务器无响应"]);
-      return;
-    }
-    if (queued.queued) {
-      await pollSolveTask(queued.taskId, solveBody);
-      return;
-    }
-    applySolvePayload(queued);
+    const payload = await apiPost("/api/solve", solveBody);
+    applySolvePayload(payload);
   } catch (error) {
-    $("solveStatus").textContent = "排课失败";
+    $("solveStatus").textContent = "排课请求中断，请重新点击自动排课。";
     showErrors([String(error)]);
   } finally {
+    clearInterval(queueTimer);
     $("solveButton").disabled = false;
   }
 }
 
-async function pollSolveTask(taskId, solveBody) {
-  let retryCount = 0;
-  while (true) {
-    const state = await apiGet(`/api/task?taskId=${encodeURIComponent(taskId)}`);
-    if (!state.ok) {
-      if (retryCount < 2) {
-        retryCount += 1;
-        $("solveStatus").textContent = "排队任务已失效，正在自动重新提交...";
-        solveVariant += 1;
-        const retryBody = { ...solveBody, variant: solveVariant };
-        const requeued = await apiPost("/api/solve", retryBody);
-        if (requeued.ok && requeued.queued) {
-          taskId = requeued.taskId;
-          continue;
-        }
+function startQueuePolling() {
+  let inFlight = false;
+  return setInterval(async () => {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const state = await apiGet("/api/queue-status");
+      if (!state.ok) return;
+      if (state.total > 1) {
+        $("solveStatus").textContent =
+          `正在排队，当前共有 ${state.total} 个排课任务，前面等待 ${state.waiting} 人...`;
+      } else if (state.total === 1) {
+        $("solveStatus").textContent = "已轮到当前任务，正在排课，请稍候...";
+      } else {
+        $("solveStatus").textContent = "正在准备排课，请稍候...";
       }
-      $("solveStatus").textContent = "排课任务查询失败";
-      showErrors([state.error || "任务不存在"]);
-      return;
+    } catch (error) {
+      // 状态轮询失败不影响正在进行的排课请求。
+    } finally {
+      inFlight = false;
     }
-    if (state.status === "queued") {
-      const ahead = Math.max(0, (state.position || 1) - 1);
-      $("solveStatus").textContent = ahead
-        ? `正在排队，前面还有 ${ahead} 位用户...`
-        : "正在排队，即将开始排课...";
-    } else if (state.status === "running") {
-      $("solveStatus").textContent = "正在排课，请稍候...";
-    } else {
-      applySolvePayload(state);
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
+  }, 1000);
 }
 
 function applySolvePayload(payload) {
@@ -928,17 +910,13 @@ async function exportWorkbook() {
     return;
   }
   for (const file of payload.files || []) {
-    const filename = file.path.split(/[\\/]/).pop();
-    const response = await fetch("/api/download", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename }),
+    const binary = atob(file.contentBase64 || "");
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
-    if (!response.ok) {
-      showErrors([`下载失败：${filename}`]);
-      return;
-    }
-    const blob = await response.blob();
+    const filename = file.name;
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
